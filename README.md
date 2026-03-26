@@ -37,3 +37,4 @@ git clone --depth=1 https://github.com/OpenFuTech/SCUT-FT-Guide
 - [浙江大学课程攻略共享计划](https://github.com/QSCTech/zju-icicles)
 - [清华大学计算机系课程攻略](https://github.com/PKUanonym/REKCARC-TSC-UHT)
 - [哈工大（深圳）计算机专业课程攻略](https://github.com/HITSZ-OpenCS/HITSZ-OpenCS)
+<!-- temp commit marker 2026-03-26 -->
