@@ -1,11 +1,13 @@
 name: opencode PR Review
 
 on:
-  # 自动审查：pull_request_target 在本仓库上下文中运行，
-  # 因此来自 Fork 的 PR（本仓库绝大多数 PR）也能读到密钥并留下评论
-  pull_request_target:
+  # 自动审查：仅对来自本仓库分支的 PR 生效。
+  # 注意：GitHub 不会把密钥传给由 Fork 发起的 PR，
+  # 因此 Fork 的 PR 需由维护者用下面的 /oc 命令触发（opencode 不支持 pull_request_target）
+  pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # 手动触发：在 PR 中评论 /oc 或 /opencode 即可再次审查或提出追问
+  # 手动触发：维护者在 PR 中评论 /oc 或 /opencode 即可审查，
+  # 该事件在本仓库上下文中运行，因此对 Fork 的 PR 同样有效
   issue_comment:
     types: [created]
 
@@ -16,7 +18,7 @@ concurrency:
 jobs:
   review:
     if: >-
-      github.event_name == 'pull_request_target' ||
+      github.event_name == 'pull_request' ||
       (github.event.issue.pull_request != null &&
        (contains(github.event.comment.body, '/oc') ||
         contains(github.event.comment.body, '/opencode')))
