@@ -18,13 +18,19 @@ concurrency:
 jobs:
   review:
     # 来自 Fork 的 PR 拿不到密钥，直接跳过（而不是留下一个失败的红叉吓到同学），
-    # 这类 PR 由维护者评论 /oc 触发审查
+    # 这类 PR 由维护者评论 /oc 触发审查。
+    #
+    # 注意 author_association 限制：本仓库是公开仓库，issue_comment 对任何人都会触发，
+    # 若不加限制，任何人都能靠反复评论 /oc 来消耗仓库的 API 额度。
+    # 因此只接受具有写权限者（OWNER / MEMBER / COLLABORATOR）发出的指令。
     if: >-
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event.issue.pull_request != null &&
        (contains(github.event.comment.body, '/oc') ||
-        contains(github.event.comment.body, '/opencode')))
+        contains(github.event.comment.body, '/opencode')) &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                github.event.comment.author_association))
     runs-on: ubuntu-latest
 
     # 权限即是护栏：agent 能做的事情不超过这里授予的范围。
