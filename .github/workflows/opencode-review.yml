@@ -62,7 +62,49 @@ jobs:
             !**/*.jpeg
             !**/*.png
 
+      # 先探一次 provider：密钥缺失、失效、余额不足、模型不存在等情况在这里就拦下，
+      # 避免 opencode 把「APIError: ...」之类的报错发到同学的 PR 上
+      - name: Preflight - 检查 provider 是否可用
+        id: preflight
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: |
+          if [ -z "${GLM_API_KEY}" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 GLM_API_KEY，跳过本次审查"
+            exit 0
+          fi
+          CODE=$(curl -sS -o /tmp/probe.json -w '%{http_code}' --max-time 30 \
+            -X POST "https://open.bigmodel.cn/api/paas/v4/chat/completions" \
+            -H "Authorization: Bearer ${GLM_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' \
+            || echo "000")
+          if [ "${CODE}" = "200" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            # 只记录状态码，不打印响应体，避免泄露密钥相关信息
+            echo "::warning::provider 不可用（HTTP ${CODE}），跳过本次审查"
+          fi
+
+      # 记录审查前最后一条评论的 ID，事后只清理本次新产生的评论
+      - name: 记录评论基线
+        id: baseline
+        if: steps.preflight.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          LAST=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+            --jq '[.[].id] | max // 0')
+          echo "last_id=${LAST}" >> "$GITHUB_OUTPUT"
+
       - name: Run opencode review
+        id: review
+        if: steps.preflight.outputs.ok == 'true'
+        # 审查失败不要让整个 PR 挂上红叉，失败信息保留在 Actions 日志里
+        continue-on-error: true
         uses: anomalyco/opencode/github@latest
         env:
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
@@ -119,3 +161,24 @@ jobs:
             - 本仓库贡献者多为在校学生、且多用 GitHub 网页端提交，语气请友好、具体、可操作，
               直接说明「改成什么」而不只是「哪里不对」
             - 你只负责评审与评论，**不要**修改文件、推送分支或创建提交
+
+      # 兜底：万一 opencode 中途失败并已经把报错发成评论，这里把它删掉，
+      # 只处理基线之后新产生的、由 bot 发出的报错评论，不会误删正常的审查意见
+      - name: 清理失败产生的报错评论
+        if: always() && steps.review.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          SINCE: ${{ steps.baseline.outputs.last_id }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+            --jq ".[] | select(.id > (${SINCE:-0})) \
+                   | select(.user.login == \"github-actions[bot]\") \
+                   | select(.body | test(\"APIError|AI_APICallError|ProviderAuthError|^Error:|Process completed with exit code\"; \"i\")) \
+                   | .id" \
+          | while read -r ID; do
+              [ -n "${ID}" ] || continue
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/issues/comments/${ID}" \
+                && echo "已删除报错评论 ${ID}"
+            done
+          echo "::warning::本次审查失败，已静默处理（详见本次运行日志）"
