@@ -1,0 +1,112 @@
+name: opencode PR Review
+
+on:
+  # 自动审查：pull_request_target 在本仓库上下文中运行，
+  # 因此来自 Fork 的 PR（本仓库绝大多数 PR）也能读到密钥并留下评论
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # 手动触发：在 PR 中评论 /oc 或 /opencode 即可再次审查或提出追问
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')))
+    runs-on: ubuntu-latest
+
+    # 权限即是护栏：agent 能做的事情不超过这里授予的范围。
+    # 它可以在 PR 上评论，但无法推送分支、无法改动 main、无法读取其他密钥。
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout PR content
+        uses: actions/checkout@v6
+        with:
+          # 检出 PR 的实际内容供 agent 阅读。
+          # 本工作流不会执行 PR 中的任何脚本（无 npm install、无 make、无 python）
+          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', github.event.issue.number) }}
+          fetch-depth: 0
+          persist-credentials: false
+          # 本仓库约 1.9GB，其中 74% 是 PDF。
+          # 过滤 blob 并稀疏检出，只拉取评审真正需要的文本文件，
+          # 二进制资料仍可通过 git ls-tree / PR API 看到文件名与体积
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !**/*.pdf
+            !**/*.epub
+            !**/*.zip
+            !**/*.docx
+            !**/*.pptx
+            !**/*.ppt
+            !**/*.pcapng
+            !**/*.jpg
+            !**/*.jpeg
+            !**/*.png
+
+      - name: Run opencode review
+        uses: anomalyco/opencode/github@latest
+        env:
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: zhipu/glm-5.3-flash
+          use_github_token: true
+          prompt: |
+            你是本仓库（华南理工未来技术学院课程攻略）的 PR 审查助手。请用**中文**审查本次 PR。
+
+            ## 第一步：先读规范
+            仓库根目录的 `Contribution.md` 是本仓库的**权威规范**，请先完整阅读它，
+            并以其中的规定作为审查依据。下面列出的只是历史上反复出现的问题，不能取代 `Contribution.md`。
+            你可以自由浏览仓库中的任何文件（例如对比同类课程目录的组织方式），不要只看 diff。
+
+            ## 第二步：重点检查项
+
+            **目录与命名（Contribution.md §2.1）**
+            - 每门课单独一个文件夹，课程根目录下原则上只放 `README.md`
+            - `ebook/`：`书本名称_出版社.pdf`；受版权或体积限制时用同名 `.txt` 说明所需版本
+            - `slide/`、`hw/`、`lab/`、`note/`：需为 `20xx_学生昵称/`（课件为 `20xx_对应教师/`）
+            - `exam/`：需为 `20xx/`，且同一目录内不要混放不同学年的试卷
+            - 作业、习题讲解应放在 `hw/` 而非 `exam/`
+            - 笔记中的图片必须使用**绝对路径**，相对路径在网站上无法显示
+
+            **README 模板（Contribution.md §2.2）**
+            - 必须保留「一、课程内容 / 二、考核方式 / 三、修读攻略 / 四、注意事项」四个二级标题
+            - 不得出现重复标题（例如两个「## 三、修读攻略」会导致站点侧边栏重复）
+            - 署名格式为 `20XX级 昵称：`，新增内容应另起署名段落，
+              **不要把自己的内容并入他人已有的署名列表**，也不要删除他人署名
+            - 保留 `202X级XXX:` 及其下的 `- 待补充` 占位，供后来者续写
+            - 老师姓名沿用仓库惯例的小写拼音首字母（如 `whx`、`jzp`），同一文件内不要一会儿拼音一会儿汉字
+
+            **不应提交的文件**
+            - 系统垃圾文件：`.DS_Store`、`._*`、`Thumbs.db`、`desktop.ini`
+            - 编译中间产物：`.aux`、`.log`、`.out`、`.toc`、`.synctex` 等（`.tex` 源文件与成品 `.pdf` 应保留）
+            - 文件名中的 ` (1)`、`_副本`、`- 副本` 等重复下载痕迹
+            - 单个文件不得超过 100MB（本仓库未启用 LFS，超过会导致提交无效）；
+              超过 50MB 的文件请在评论中指出，提醒维护者注意仓库体积
+
+            **内容一致性**
+            - 同一文件内的成绩占比、考试题型等信息若前后矛盾，务必指出（例如「考勤20%」与「出勤30%」并存）
+            - Markdown 链接必须带协议头，`(video.jw.scut.edu.cn)` 会被当作相对路径
+            - 站点未启用数学公式插件，`$\LaTeX$` 这类行内公式会原样显示
+
+            ## 第三步：输出要求
+            - 在 PR 上发表**一条**总结评论，不要逐行刷屏
+            - 按「必须修改 / 建议修改 / 可选」三档分组，每条指出**具体文件路径**，能给出行号更好
+            - 如果没有发现问题，就明确说通过，不要为了凑数而挑刺
+            - 本仓库贡献者多为在校学生、且多用 GitHub 网页端提交，语气请友好、具体、可操作，
+              直接说明「改成什么」而不只是「哪里不对」
+            - 你只负责评审与评论，**不要**修改文件、推送分支或创建提交
