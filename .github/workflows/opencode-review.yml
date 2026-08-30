@@ -17,8 +17,11 @@ concurrency:
 
 jobs:
   review:
+    # 来自 Fork 的 PR 拿不到密钥，直接跳过（而不是留下一个失败的红叉吓到同学），
+    # 这类 PR 由维护者评论 /oc 触发审查
     if: >-
-      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event.issue.pull_request != null &&
        (contains(github.event.comment.body, '/oc') ||
         contains(github.event.comment.body, '/opencode')))
