@@ -1,0 +1,16 @@
+name: Prepare opencode review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate event
+        run: |
+          echo "PR #${{ github.event.pull_request.number }} at ${{ github.event.pull_request.head.sha }}"
+          echo "This workflow deliberately uses no secrets."
