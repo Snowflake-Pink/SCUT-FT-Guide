@@ -1,31 +1,29 @@
 name: opencode PR Review
 
 on:
-  # 自动审查：仅对来自本仓库分支的 PR 生效。
-  # 注意：GitHub 不会把密钥传给由 Fork 发起的 PR，
-  # 因此 Fork 的 PR 需由维护者用下面的 /oc 命令触发（opencode 不支持 pull_request_target）
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  # 自动审查由无 secrets 的 PR workflow 完成后触发，支持 Fork PR。
+  workflow_run:
+    workflows: ["Prepare opencode review"]
+    types: [completed]
   # 手动触发：维护者在 PR 中评论 /oc 或 /opencode 即可审查，
-  # 该事件在本仓库上下文中运行，因此对 Fork 的 PR 同样有效
+      # 该事件在本仓库上下文中运行，因此对 Fork 的 PR 同样有效
   issue_comment:
     types: [created]
 
 concurrency:
-  group: opencode-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: opencode-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 jobs:
   review:
-    # 来自 Fork 的 PR 拿不到密钥，直接跳过（而不是留下一个失败的红叉吓到同学），
+    # 来自 Fork 的 PR 拿不到密钥，直接跳过（不会留下一个失败的红叉吓到同学），
     # 这类 PR 由维护者评论 /oc 触发审查。
     #
     # 注意 author_association 限制：本仓库是公开仓库，issue_comment 对任何人都会触发，
     # 若不加限制，任何人都能靠反复评论 /oc 来消耗仓库的 API 额度。
     # 因此只接受具有写权限者（OWNER / MEMBER / COLLABORATOR）发出的指令。
     if: >-
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event.issue.pull_request != null &&
        (contains(github.event.comment.body, '/oc') ||
         contains(github.event.comment.body, '/opencode')) &&
@@ -42,12 +40,11 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout PR content
+      - name: Checkout trusted repository content
         uses: actions/checkout@v6
         with:
-          # 检出 PR 的实际内容供 agent 阅读。
-          # 本工作流不会执行 PR 中的任何脚本（无 npm install、无 make、无 python）
-          ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', github.event.issue.number) }}
+          # workflow_run 中只检出默认分支，避免执行 Fork 提交中的代码。
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
           # 本仓库约 1.9GB，其中 74% 是 PDF。
@@ -67,6 +64,27 @@ jobs:
             !**/*.jpg
             !**/*.jpeg
             !**/*.png
+
+      - name: Resolve PR for workflow_run
+        id: pr
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          PR=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq 'map(select(.state == "open")) | .[0].number // empty')
+          test -n "$PR" || { echo "No open PR found for ${SHA}"; exit 1; }
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: Export opencode event context
+        if: github.event_name == 'workflow_run'
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          jq -cn --arg repo "$REPO" --argjson pr "$PR" \
+            '{eventName:"issue_comment",repo:{owner:($repo|split("/")[0]),repo:($repo|split("/")[1])},actor:"github-actions[bot]",payload:{issue:{number:$pr,pull_request:{}},comment:{id:0,body:"/oc review this pull request"}}}' \
+            | sed 's/^/MOCK_EVENT=/' >> "$GITHUB_ENV"
 
       # 先探一次 provider：密钥缺失、失效、余额不足、模型不存在等情况在这里就拦下，
       # 避免 opencode 把「APIError: ...」之类的报错发到同学的 PR 上
@@ -100,7 +118,7 @@ jobs:
         if: steps.preflight.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR: ${{ steps.pr.outputs.number || github.event.pull_request.number || github.event.issue.number }}
         run: |
           LAST=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
             --jq '[.[].id] | max // 0')
@@ -115,13 +133,15 @@ jobs:
         env:
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOCK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: zhipu/glm-5.3-flash
           use_github_token: true
           # 不生成 opencode.ai 的分享会话，评论末尾就不会带分享卡片与链接
           share: false
           prompt: |
-            你是本仓库（华南理工未来技术学院课程攻略）的 PR 审查助手。请用**中文**审查本次 PR。
+            你是本仓库（华南理工未来技术学院课程攻略）的 PR 审查助手。请默认用**中文**审查本次 PR。
 
             ## 第一步：先读规范
             仓库根目录的 `Contribution.md` 是本仓库的**权威规范**，请先完整阅读它，
@@ -144,7 +164,6 @@ jobs:
             - 署名格式为 `20XX级 昵称：`，新增内容应另起署名段落，
               **不要把自己的内容并入他人已有的署名列表**，也不要删除他人署名
             - 保留 `202X级XXX:` 及其下的 `- 待补充` 占位，供后来者续写
-            - 老师姓名沿用仓库惯例的小写拼音首字母（如 `whx`、`jzp`），同一文件内不要一会儿拼音一会儿汉字
 
             **不应提交的文件**
             - 系统垃圾文件：`.DS_Store`、`._*`、`Thumbs.db`、`desktop.ini`
@@ -155,14 +174,14 @@ jobs:
 
             **内容一致性**
             - 同一文件内的成绩占比、考试题型等信息若前后矛盾，务必指出（例如「考勤20%」与「出勤30%」并存）
-            - Markdown 链接必须带协议头，`(video.jw.scut.edu.cn)` 会被当作相对路径
+            - Markdown 链接必须带协议头，`(video.example.com)` 会被当作相对路径
             - 站点未启用数学公式插件，`$\LaTeX$` 这类行内公式会原样显示
 
             ## 第三步：输出要求
             - **不要自己调用任何工具去发表评论**。直接把审查结果作为你的最终回复输出即可，
               工作流会自动把它发布成 PR 上的一条评论；你若再自行发一条，PR 上就会出现两条重复评论
             - 也不要逐行评论
-            - 按「必须修改 / 建议修改 / 可选」三档分组，每条指出**具体文件路径**，能给出行号更好
+            - 按「重点建议修改 / 其他建议修改 / 可选」三档分组，每条指出**具体文件路径**，能给出行号更好
             - 如果没有发现问题，就明确说通过，不要为了凑数而挑刺
             - 本仓库贡献者多为在校学生、且多用 GitHub 网页端提交，语气请友好、具体、可操作，
               直接说明「改成什么」而不只是「哪里不对」
@@ -174,7 +193,7 @@ jobs:
         if: always() && steps.review.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PR: ${{ steps.pr.outputs.number || github.event.pull_request.number || github.event.issue.number }}
           SINCE: ${{ steps.baseline.outputs.last_id }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
