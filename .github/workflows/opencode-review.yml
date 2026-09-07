@@ -83,8 +83,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           jq -cn --arg repo "$REPO" --argjson pr "$PR" \
-            '{eventName:"issue_comment",repo:{owner:($repo|split("/")[0]),repo:($repo|split("/")[1])},actor:"github-actions[bot]",payload:{issue:{number:$pr,pull_request:{}},comment:{id:0,body:"/oc review this pull request"}}}' \
-            | sed 's/^/MOCK_EVENT=/' >> "$GITHUB_ENV"
+            '{issue:{number:$pr,pull_request:{}},comment:{id:0,body:"/oc review this pull request"},repository:{full_name:$repo},sender:{login:"github-actions[bot]"}}' \
+            > "$GITHUB_WORKSPACE/opencode-event.json"
+          echo "GITHUB_EVENT_PATH=$GITHUB_WORKSPACE/opencode-event.json" >> "$GITHUB_ENV"
+          echo "GITHUB_EVENT_NAME=issue_comment" >> "$GITHUB_ENV"
 
       # 先探一次 provider：密钥缺失、失效、余额不足、模型不存在等情况在这里就拦下，
       # 避免 opencode 把「APIError: ...」之类的报错发到同学的 PR 上
@@ -134,7 +136,6 @@ jobs:
           GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MOCK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: zhipu/glm-5.3-flash
           use_github_token: true
